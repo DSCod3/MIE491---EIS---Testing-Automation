@@ -1,0 +1,36 @@
+// PLC Architecture Diagram
+digraph {
+	nodesep=1.2 rankdir=LR ranksep=1.0 splines=spline
+	GUI [label="GUI on Laptop
+(WPH Interface)" fillcolor=lightblue shape=box style=filled]
+	Serial [label="Serial Communication
+(112500 bps)" fillcolor=lightgrey shape=box style=filled]
+	PLC [label="PLC (ESP32 based)
+- Sensor Inputs:
+  • Potentiometers
+  • Load Cells
+  • Pressure Sensors
+- Processing:
+  • PID Control
+  • Load Curve Execution
+  • Warmup Routine
+- Serial Command Processing" fillcolor=orange shape=box style=filled]
+	Valve [label="Analog Output
+(Valve Control via PID)" fillcolor=lightgreen shape=box style=filled]
+	Solenoids [label="Digital Outputs
+(Solenoid Valve Control)" fillcolor=lightgreen shape=box style=filled]
+	Air [label="Air Pistons
+(Load Cell & Pressure Feedback)" fillcolor=yellow shape=box style=filled]
+	Display [label="Data Logging & Display
+(WPH GUI Feedback)" fillcolor=lightblue shape=box style=filled]
+	GUI -> Serial [label="User Commands
+Parameters & Requests" color=blue]
+	Serial -> PLC [label="Commands & Feedback" color=blue]
+	PLC -> Valve [label="PID Output
+Control Signal" color=red]
+	PLC -> Solenoids [label="Solenoid Control Signals" color=red]
+	PLC -> Air [label="Control & Sensor Requests" color=purple]
+	Air -> PLC [label="Pressure Sensor Feedback" color=purple]
+	PLC -> Display [label="Processed Data & Status" color=darkgreen]
+	Display -> GUI [label="Visualization Output" color=darkgreen]
+}
