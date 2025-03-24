@@ -1,53 +1,89 @@
 /*
   LoadCell_playground.cpp
 
-  This sketch demonstrates a basic PID control loop using a load cell
-  on an Industrial Shields ESP32 PLC. The load cell outputs a voltage 
-  between 0.5V and 4.5V. According to the load cell manufacturer, the 
-  conversion factor is:
+  Basic PID control loop using two load cells
+  on an Industrial Shields ESP32 PLC. Each load cell outputs a voltage 
+  between 0.5V and 4.5V (but may have a higher no-load baseline due to 
+  inherent offsets in wiring/signal conditioning). The ADC has a 0–10V range (0–2047 counts).
+
+  The weight for each load cell is calculated as:
+      weight (lb) = (correctedVoltage - 0.5) * (conversion factor)
   
-      1242.9920 lb/V
+  For load cell 1 (on I0_7): conversion factor = 1242.9920 lb/V
+  For load cell 2 (on I0_8): conversion factor = 1242.0049 lb/V
   
-  This means:
-      weight (lb) = voltage * 1242.9920
+  Dynamic calibration is performed at startup. After calibration, an offset is computed so that
+  the effective (corrected) voltage will be 0.5V at no load.
   
-  The load cell is connected to analog input I0_7 and the PID controller's 
-  output is sent to the analog output A0_5. The PID loop uses the measured 
-  weight (in lb) as the process variable, and the setpoint is defined in lb.
-  
+  The process variable for the PID loop is the average of both load cell weights.
   Debug information is printed via Serial.
 */
 
 #include <PID_v1.h>
 
-// --- Conversion Factor ---
-#define LB_PER_VOLT 1242.9920
+// --- Conversion Factors ---
+#define LB_PER_VOLT_1 1242.9920
+#define LB_PER_VOLT_2 1242.0049
 
 // --- Hardware Definitions ---
-// Use I0_7 for the load cell analog input (0.5V to 4.5V range).
-#define PIN_LOADCELL I0_7
-
-// Use A0_5 for the analog output (PWM) to drive an actuator.
-#define PIN_PWM_OUTPUT A0_5
+#define PIN_LOADCELL1 I0_7    // Load cell 1 input on I0_7 (0–10V)
+#define PIN_LOADCELL2 I0_8    // Load cell 2 input on I0_8 (0–10V)
+#define PIN_PWM_OUTPUT A0_5   // Analog output (PWM) on A0_5
 
 // --- PID Control Variables ---
-// Define the setpoint in pounds (for example, 3000 lb).
-double setpoint = 3000.0;  
-double input = 0;       // Process variable: measured weight in lb
-double output = 0;      // PID computed output (0-255 for PWM)
+double setpoint = 30.0;  // Desired weight in lb
+double input = 0;        // Process variable: average measured weight in lb
+double output = 0;       // PID computed output (0-255 for PWM)
 
-// PID tuning parameters (adjust as needed).
+// PID tuning parameters (adjust as needed)
 double Kp = 2.0, Ki = 0.5, Kd = 1.0;
 PID pid(&input, &output, &setpoint, Kp, Ki, Kd, DIRECT);
+
+// --- Timing Variables ---
+unsigned long startTime = 0;               // To mark when the test started
+const unsigned long TEST_DURATION = 120000; // Test duration: 2 minutes in ms
+
+// --- Calibration Variables ---
+double baseline1 = 0;  // Calibrated baseline for load cell 1 (in Volts)
+double baseline2 = 0;  // Calibrated baseline for load cell 2 (in Volts)
+double offset1 = 0;    // offset1 = baseline1 - 0.5 (to force no-load effective voltage = 0.5V)
+double offset2 = 0;    // offset2 = baseline2 - 0.5
+const int calibrationSamples = 10;  // Number of samples for calibration
+
+// --- Helper Function ---
+// Convert raw ADC reading to voltage (0–10V)
+double convertRawToVoltage(int rawValue) {
+  return (rawValue / 2047.0) * 10.0;
+}
 
 // --- Setup ---
 void setup() {
   Serial.begin(115200);
   while (!Serial) {}  // Wait for Serial to initialize
+
+  // Perform dynamic calibration for both load cells.
+  double sum1 = 0, sum2 = 0;
+  Serial.println("Calibrating load cells (no load)...");
+  for (int i = 0; i < calibrationSamples; i++) {
+    int raw1 = analogRead(PIN_LOADCELL1);
+    int raw2 = analogRead(PIN_LOADCELL2);
+    sum1 += convertRawToVoltage(raw1);
+    sum2 += convertRawToVoltage(raw2);
+    delay(100);
+  }
+  baseline1 = sum1 / calibrationSamples;
+  baseline2 = sum2 / calibrationSamples;
+  // Compute offsets such that no-load corrected voltage becomes 0.5V.
+  offset1 = baseline1 - 0.5;
+  offset2 = baseline2 - 0.5;
+  Serial.print("Load Cell 1 Baseline: "); Serial.print(baseline1, 3); Serial.print(" V, Offset: "); Serial.print(offset1,3); Serial.println(" V");
+  Serial.print("Load Cell 2 Baseline: "); Serial.print(baseline2, 3); Serial.print(" V, Offset: "); Serial.print(offset2,3); Serial.println(" V");
+
+  // Mark the start time for the test.
+  startTime = millis();
   
-  // Initialize the PID controller in AUTOMATIC mode.
+  // Initialize the PID controller in AUTOMATIC mode and set output limits.
   pid.SetMode(AUTOMATIC);
-  // Set the PID output limits (0-255 for PWM).
   pid.SetOutputLimits(0, 255);
   
   Serial.println("LoadCell_playground PID test starting...");
@@ -55,19 +91,36 @@ void setup() {
 
 // --- Loop ---
 void loop() {
-  // Read raw ADC value from the load cell on I0_7.
-  int rawValue = analogRead(PIN_LOADCELL);
+  // End test after 2 minutes.
+  if (millis() - startTime >= TEST_DURATION) {
+    Serial.println("Test duration complete. Halting execution.");
+    analogWrite(PIN_PWM_OUTPUT, 0);  // Optionally, set output to 0
+    while (true) {
+      delay(1000);
+    }
+  }
   
-  // Convert raw ADC reading to voltage.
-  // For an 11-bit ADC (0–2047) with a load cell output range of 0.5-4.5V:
-  // voltage = (rawValue / 2047.0) * (4.5 - 0.5) + 0.5 = (rawValue/2047.0)*4.0 + 0.5
-  double voltage = (rawValue / 2047.0) * 4.0 + 0.5;
+  // --- Load Cell 1 ---
+  int rawValue1 = analogRead(PIN_LOADCELL1);
+  double voltage1 = convertRawToVoltage(rawValue1);
+  // Correct the voltage by subtracting the computed offset.
+  double correctedVoltage1 = voltage1 - offset1;
+  // Ensure that corrected voltage is at least 0.5V.
+  if (correctedVoltage1 < 0.5) correctedVoltage1 = 0.5;
+  double weight1 = (correctedVoltage1 - 0.5) * LB_PER_VOLT_1;
   
-  // Convert voltage to weight (lb) using the manufacturer's conversion factor.
-  double weight = voltage * LB_PER_VOLT;
+  // --- Load Cell 2 ---
+  int rawValue2 = analogRead(PIN_LOADCELL2);
+  double voltage2 = convertRawToVoltage(rawValue2);
+  double correctedVoltage2 = voltage2 - offset2;
+  if (correctedVoltage2 < 0.5) correctedVoltage2 = 0.5;
+  double weight2 = (correctedVoltage2 - 0.5) * LB_PER_VOLT_2;
   
-  // Use the measured weight as the process variable for the PID controller.
-  input = weight;
+  // --- Compute Average Weight ---
+  double avgWeight = (weight1 + weight2) / 2.0;
+  
+  // Use the average weight as the process variable for the PID controller.
+  input = avgWeight;
   
   // Compute the PID output.
   pid.Compute();
@@ -75,16 +128,22 @@ void loop() {
   // Print diagnostic information.
   Serial.print("Setpoint: ");
   Serial.print(setpoint, 2);
-  Serial.print(" lb, Measured: ");
-  Serial.print(weight, 2);
-  Serial.print(" lb, Voltage: ");
-  Serial.print(voltage, 2);
+  Serial.print(" lb, Weight1: ");
+  Serial.print(weight1, 2);
+  Serial.print(" lb, Weight2: ");
+  Serial.print(weight2, 2);
+  Serial.print(" lb, Avg Weight: ");
+  Serial.print(avgWeight, 2);
+  Serial.print(" lb, CorrVoltage1: ");
+  Serial.print(correctedVoltage1, 3);
+  Serial.print(" V, CorrVoltage2: ");
+  Serial.print(correctedVoltage2, 3);
   Serial.print(" V, PID Output: ");
   Serial.println(output, 2);
   
   // Output the PID result to the analog output A0_5 using PWM.
   analogWrite(PIN_PWM_OUTPUT, (int)output);
   
-  // Delay before next iteration (adjust as needed).
-  delay(1000);
+  // Delay before next iteration.
+  delay(10);
 }
